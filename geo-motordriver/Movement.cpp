@@ -11,36 +11,24 @@
 // Regardless: if we have appreciable backward speed and it tries to stop,
 // the brakes are kinda too fast.
 // also: the left joystick is sticking forward :/
-#define LMINBACKMOTOR 1290
-#define LMINMOTOR 1290
-#define LSLOWMOTOR 1390 //slow mode max
-#define LMAXMOTOR 1800  // fast mode max
-/*
-              l            r                                                    
-	      step 0:  ---------    1090/1110                                            
-	      step 1:  1300/1310    1120/1140                                            
-	      step 2:  1320/1350    1160/1180                                            
-	      step 3:  1370/1390    1200/1220                                            
-                                    1230/1250
-                                    1270 / 1280
-                                    1300 / 1320
-                                    1340 / 1350
-                                    1370 / ?
-*/
+#define LMINBACKMOTOR 800 //1130 is really when it starts, but the controller wants to see it ramp up to that value
+#define LMINMOTOR 1130
+#define LSLOWMOTOR 1220 //slow mode max
+#define LMAXMOTOR 1270  // fast mode max
 
-#define RMINBACKMOTOR 1110
-#define RMINMOTOR 1110
-#define RSLOWMOTOR 1380 // slow mode max
-#define RMAXMOTOR 1680  // fast mode max
+#define RMINBACKMOTOR 690 // same as above but 1020
+#define RMINMOTOR 1020
+#define RSLOWMOTOR 1100 // slow mode max
+#define RMAXMOTOR 1150  // fast mode max
 
-#define MAXSAFETY 3100 // don't ever allow values over this
+#define MAXSAFETY 1300 // don't ever allow values over this
 
 #define ACCEL 3
 #define CATCHUP 5       // multiplier on top of ACCEL if one motor needs to catch the other
-#define DECEL 150       // estimated rate at which we decelerate with brakes on
+#define DECEL 50       // estimated rate at which we decelerate with brakes on
 #define MINBRAKEVAL 250 // go to full-stop-zero when we're below this value
 
-#define STOPPED_THRESHOLD 400 // how many cycles to remain @ 0 before moving
+#define STOPPED_THRESHOLD 15 // how many cycles to remain @ 0 before moving
 
 // FIXME: put STOPPED_THRESHOLD Back at 5; adjust DECEL correctly;
 // implement sensors that tell us actual_l and actual_r exactly...

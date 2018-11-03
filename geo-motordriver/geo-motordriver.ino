@@ -9,9 +9,6 @@
 #define MCP4921_LDAC_PIN 3
 #define MCP4921_SS_PIN 10
 
-// Is the brake on by default when the system boots?
-#define DEFAULTBRAKE 0
-
 DAC_MCP49xx dac(DAC_MCP49xx::MCP4922, MCP4921_SS_PIN, MCP4921_LDAC_PIN);
 
 Movement movement; // the movement control engine code...
@@ -31,8 +28,6 @@ Movement movement; // the movement control engine code...
 #define Motor2DirectionPin 23
 #define Motor2BrakePin 22
 
-#define bitShiftModifier 7
-
 #define mcpShutdown 2
 
 unsigned long motorTimer = 0;
@@ -44,6 +39,243 @@ unsigned long brakeTimer = 0;
 
 // FLOAT_TIME is how long we should continue to obey a pulse that came in
 #define FLOAT_TIME 200
+
+// how many bits we lop off the number of microseconds for a given
+// pulse measurement. We don't need all the accuracy (and our accuracy is
+// skewed by the time spent in code anyway). 
+#define bitShiftModifier 7
+
+// left maxes out ~33000
+#define LmaxTime 63000
+// right maxes out ~83000
+#define RmaxTime 100000
+
+typedef struct _sensorState {
+  bool a;
+  bool b;
+  bool c;
+} sensorState;
+
+typedef struct _sensorReading {
+  bool isValid;
+  bool movingForward;
+  bool movingBackward;
+  unsigned long periodA;
+  unsigned long periodB;
+  unsigned long periodC;
+  unsigned long estimatedPeriodOverall;
+} sensorReading;
+
+typedef struct _sensorHistory {
+  unsigned long startA;
+  unsigned long periodA;
+  unsigned long startB;
+  unsigned long periodB;
+  unsigned long startC;
+  unsigned long periodC;
+
+  unsigned long timeOfLastReading;
+} sensorHistory;
+
+// convenience macros for determining which sensors are "on"
+// (low). Note repitition of logic for ease of understanding (e.g. AB
+// is the same as BA).
+#define isA(x) ((x).a==LOW && (x).b==HIGH && (x).c==HIGH)
+#define isAB(x) ((x).a==LOW && (x).b==LOW && (x).c==HIGH)
+#define isB(x) ((x).a==HIGH && (x).b==LOW && (x).c==HIGH)
+#define isBC(x) ((x).a==HIGH && (x).b==LOW && (x).c==LOW)
+#define isC(x) ((x).a==HIGH && (x).b==HIGH && (x).c==LOW)
+#define isCA(x) ((x).a==LOW && (x).b==HIGH && (x).c==LOW)
+
+#define isBA(x) ((x).a==LOW && (x).b==LOW && (x).c==HIGH)
+#define isCB(x) ((x).a==HIGH && (x).b==LOW && (x).c==LOW)
+#define isAC(x) ((x).a==LOW && (x).b==HIGH && (x).c==LOW)
+
+#define isABC(x) ((x).a==LOW && (x).b==LOW && (x).c==LOW)
+#define isNONE(x) ((x).a==HIGH && (x).b==HIGH && (x).c==HIGH)
+
+void readSensors(sensorState *s, bool isLeft)
+{
+  bool a = true, b=true, c=true;
+
+  //  unsigned long startTime = millis();
+
+  // coded for rollover...
+  //  while (startTime + 20 > millis()) {
+  if (digitalRead(isLeft ? LsensorA : RsensorA) == LOW) {
+    a = false;
+  }
+  if (digitalRead(isLeft ? LsensorB : RsensorB) == LOW) {
+    b = false;
+  }
+  if (digitalRead(isLeft ? LsensorC : RsensorC) == LOW) {
+    c = false;
+  }
+  //  }
+
+  s->a = a;
+  s->b = b;
+  s->c = c;
+}
+
+void measureSensor(unsigned long sampleTime,
+		   sensorState *currentState, sensorState *previousState,
+		   sensorHistory *history, sensorReading *currentReading,
+		   sensorReading *previousReading, unsigned long maxTime) {
+
+  // To get speed, we need to measure the off-pulse length. If we have
+  // *none*, then we'll copy anything that exists in the old one.
+
+  // Reset the current reading
+  currentReading->periodA = currentReading->periodB = currentReading->periodC = 0;
+
+  if (currentState->a == false) {
+    if (history->startA == 0) {
+      history->startA = sampleTime;
+      // can't tell the speed yet; we just started                          
+    } else {
+      // We know the period now, b/c we know when it started.               
+      history->periodA = sampleTime - history->startA;
+      history->timeOfLastReading = sampleTime;
+      // ... but we might be wrong b/c of some transient noise. So          
+      // we don't reset rightSensor.startA. If the next read is             
+      // also low, we'll extend rightSensor.periodA.                        
+    }
+  } else {
+    // ... an all-high period tells us to reset rightSensor.startA.           
+    history->startA = 0;
+
+    if (history->periodA) {
+      // This is a true reading now.                                        
+      currentReading->periodA = history->periodA;
+      history->periodA = 0;
+    }
+  }
+
+  if (currentState->b == false) {
+    if (history->startB == 0) {
+      history->startB = sampleTime;
+    } else {
+      history->periodB = sampleTime - history->startB;
+      history->timeOfLastReading = sampleTime;
+    }
+  } else {
+    history->startB = 0;
+    if (history->periodB) {
+      currentReading->periodB = history->periodB;
+    }
+    history->periodB = 0;
+  }
+
+  if (currentState->c == false) {
+    if (history->startC == 0) {
+      history->startC = sampleTime;
+    } else {
+      history->periodC = sampleTime - history->startC;
+      history->timeOfLastReading = sampleTime;
+    }
+  } else {
+    history->startC = 0;
+    if (history->periodC) {
+      currentReading->periodC = history->periodC;
+    }
+    history->periodC = 0;
+  }
+  if (currentReading->periodA) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodA >> bitShiftModifier;
+  } else if (currentReading->periodB) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodB >> bitShiftModifier;
+  } else if (currentReading->periodC) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
+  } else if ((sampleTime - history->timeOfLastReading) >= 100000) {
+    currentReading->isValid = true;
+    currentReading->movingForward = currentReading->movingBackward = false;
+    currentReading->estimatedPeriodOverall = 0;
+  }
+
+  if (!currentReading->periodA && !currentReading->periodB && !currentReading->periodC) {
+    currentReading->periodA = previousReading->periodA;
+    currentReading->periodB = previousReading->periodB;
+    currentReading->periodC = previousReading->periodC;
+  }
+
+  // To find direction, we need to know the firing order of A, B, C.
+  // Either we're going AB B BC C CA A or we're going AC C CB B BA A.
+  // Start by assuming we're in the exact state as the previous time,
+  // and then check to see if anything has changed.  We look two steps
+  // in the future in case we missed one.
+  currentReading->movingForward = previousReading->movingForward;
+  currentReading->movingBackward = currentReading->movingBackward;
+  if (isAB(*previousState)) {
+    // forward would be AB -> B; backward would be BA -> A.  FIXME: Do
+    // we need double-jump testing (AB -> BC and BA -> AC)?
+    if (isB(*currentState) || isBC(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    }
+    else if (isA(*currentState) || isAC(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+
+  } else if (isB(*previousState)) {
+    // Forward would be B -> BC; backward would be B -> BA.
+    if (isBC(*currentState) || isC(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    } else if (isBA(*currentState) || isA(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+
+  } else if (isBC(*previousState) || isC(*previousState)) {
+    // Forward would be BC -> C; backward would be BC -> B.
+    if (isC(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    } else if (isB(*currentState) || isBA(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+  } else if (isC(*previousState)) {
+    // Forward would be C -> CA; backward would be C -> CB.
+    if (isCA(*currentState) || isA(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    } else if (isCB(*currentState) || isB(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+  } else if (isCA(*previousState)) {
+    // Forward would be CA -> A; backward would be CA -> C.
+    if (isA(*currentState) || isAB(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    } else if (isC(*currentState) || isCB(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+  } else if (isA(*previousState)) {
+    // Forward would be A -> AB; backward would be A -> AC.
+    if (isAB(*currentState) || isB(*currentState)) {
+      currentReading->movingForward = true;
+      currentReading->movingBackward = false;
+    } else if (isAC(*currentState) || isC(*currentState)) {
+      currentReading->movingBackward = true;
+      currentReading->movingForward = false;
+    }
+  }
+  if (currentReading->estimatedPeriodOverall >= maxTime) {
+    // We're stopped.
+    currentReading->movingForward = currentReading->movingBackward = 0;
+    currentReading->estimatedPeriodOverall = 0;
+  }
+
+}
+
 
 void setTimer(unsigned long *t)
 {
@@ -66,12 +298,9 @@ void setup() {
   pinMode(RsensorPower, INPUT);
 
   pinMode(Motor1DirectionPin, INPUT);
-  pinMode(Motor1BrakePin, OUTPUT);
+  pinMode(Motor1BrakePin, INPUT);
   pinMode(Motor2DirectionPin, INPUT);
-  pinMode(Motor2BrakePin, OUTPUT);
-
-  digitalWrite(Motor1BrakePin, DEFAULTBRAKE);
-  digitalWrite(Motor2BrakePin, DEFAULTBRAKE);
+  pinMode(Motor2BrakePin, INPUT);
 
   Serial.begin(115200);
   Serial.println("Startup");
@@ -88,25 +317,27 @@ void setup() {
 
 void setBrakePins(bool leftBrake, bool isOn)
 {
-  static bool lastLeftBrake = DEFAULTBRAKE;
-  static bool lastRightBrake = DEFAULTBRAKE;
+  static bool lastLeftBrake = false;
+  static bool lastRightBrake = false;
 
   if (leftBrake) {
     if (lastLeftBrake != isOn) {
-      Serial.print("LB: ");
-      Serial.print(isOn? "on" : "off");
-      Serial.print(" rb: ");
-      Serial.println(lastRightBrake? "on" : "off");
-      digitalWrite(Motor2BrakePin, isOn ? HIGH : LOW);
+      if (isOn) { // active-low; drag to ground
+	pinMode(Motor2BrakePin, OUTPUT);
+	digitalWrite(Motor2BrakePin, LOW);
+      } else { // float high to disable brake
+	pinMode(Motor2BrakePin, INPUT);
+      }
       lastLeftBrake = isOn;
     }
   } else {
     if (lastRightBrake != isOn) {
-      Serial.print("lb: ");
-      Serial.print(lastLeftBrake? "on" : "off");
-      Serial.print(" RB: ");
-      Serial.println(isOn? "on" : "off");
-      digitalWrite(Motor1BrakePin, isOn ? HIGH : LOW);
+      if (isOn) { // active-low; drag to ground
+	pinMode(Motor1BrakePin, OUTPUT);
+	digitalWrite(Motor1BrakePin, LOW);
+      } else { // float high to disable brake
+	pinMode(Motor1BrakePin, INPUT);
+      }
       lastRightBrake = isOn;
     }
   }
@@ -249,6 +480,26 @@ void updateMotors()
 
 
 void loop() {
+  static sensorState currentLeftState = { true, true, true }, 
+    previousLeftState = { true, true, true };
+  static sensorReading currentLeftReading = { false, false, false, 0, 0, 0, 0 };
+  static sensorReading previousLeftReading = { false, false, false, 0, 0, 0, 0 };
+  static sensorHistory leftSensor = { 0, 0, 0, 0, 0, 0, 0 };
+
+  static sensorState currentRightState = { true, true, true }, 
+    previousRightState = { true, true, true };
+  static sensorReading currentRightReading = { false, false, false, 0, 0, 0, 0 };
+  static sensorReading previousRightReading = { false, false, false, 0, 0, 0, 0 };
+  static sensorHistory rightSensor = { 0, 0, 0, 0, 0, 0, 0 };
+
+  unsigned long sampleTime = micros();
+  readSensors(&currentLeftState, 0);
+  readSensors(&currentRightState, 1);
+
+  // Interpret those readings
+  measureSensor(sampleTime, &currentLeftState, &previousLeftState, &leftSensor, &currentLeftReading, &previousLeftReading, LmaxTime);
+  measureSensor(sampleTime, &currentRightState, &previousRightState, &rightSensor, &currentRightReading, &previousRightReading, RmaxTime);
+
   static uint8_t ctr = 0;
   if (++ctr == 0) {
     movement.Update();

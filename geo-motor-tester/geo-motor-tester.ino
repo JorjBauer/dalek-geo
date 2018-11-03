@@ -16,7 +16,9 @@ Left motor (DAC B), forward (pin 21 INPUT): 1290 - 3030
 DAC_MCP49xx dac(DAC_MCP49xx::MCP4922, MCP4921_SS_PIN, MCP4921_LDAC_PIN);
 
 #define Motor1DirectionPin 21
+#define Motor1BrakePin 20
 #define Motor2DirectionPin 23
+#define Motor2BrakePin 22
 
 void setup()
 {
@@ -27,28 +29,27 @@ void setup()
   dac.latch();
 
   pinMode(Motor1DirectionPin, OUTPUT); // output is reverse; input is forward
-  pinMode(Motor2DirectionPin, OUTPUT);
+  digitalWrite(Motor1DirectionPin, LOW);
+  pinMode(Motor2DirectionPin, INPUT);
+  digitalWrite(Motor2DirectionPin, LOW);
+
+  pinMode(Motor1BrakePin, INPUT);
+  pinMode(Motor2BrakePin, INPUT);
 
   Serial.begin(115200);
 }
 
 void loop()
 {
-  unsigned long dv = 1000;
+  unsigned long dv = 800; // starting value
 
-  /* Reliable values?
-     
-     each of these is starts-at / reliable-value
+  unsigned long cap_r = 1100;
+  unsigned long cap_l = 1220;
 
-              l            r
-     step 0:  ---------    1090/1110
-     step 1:  1300/1310    1120/1140
-     step 2:  1320/1350    1160/1180
-     step 3:  1370/1390    1200/1220
-   */
+/* left 1120 - 1830
+   right 
 
-  unsigned long cap_r = 1220; // 1090 1130 1160 1200 1230 1270 1300 1340 1370 
-  unsigned long cap_l = 1350; // 1300 1320 1370 1410 1440 1480 1520 1550 1590
+*/
 
   while (1) {
     dac.outputA(dv > cap_r ? cap_r:dv); // right
@@ -56,7 +57,7 @@ void loop()
     dac.latch();
 
     Serial.println(dv);
-    delay(1000);
+    delay(500);
     dv = dv + 10;
     if (dv >= 4096) {
       dv = 0;
